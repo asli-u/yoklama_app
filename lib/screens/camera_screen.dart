@@ -1,115 +1,102 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
-
-import '../services/face_recognition_simulator.dart';
-import '../widgets/add_student_popup.dart';
+import 'package:path_provider/path_provider.dart';
+import '../models/student.dart';
+import '../services/face_recognition_simulator.dart'; // EKLEDİK
 import '../data/students_data.dart';
 
 class CameraScreen extends StatefulWidget {
-  const CameraScreen({super.key});
+  final Student student;
+
+  const CameraScreen({super.key, required this.student});
 
   @override
-  _CameraScreenState createState() => _CameraScreenState();
+  State<CameraScreen> createState() => _CameraScreenState();
 }
 
 class _CameraScreenState extends State<CameraScreen> {
-  late CameraController _controller;
-  bool _isInitialized = false;
-  bool _isProcessing = false; 
-  bool _popupShown = false;
+  CameraController? _controller;
+  bool _isCameraInitialized = false;
+  XFile? _capturedImage;
 
   @override
   void initState() {
     super.initState();
-    initializeCamera();
+    _initializeCamera();
   }
 
-  Future<void> initializeCamera() async {
-    final cameras = await availableCameras();
-    _controller = CameraController(
-      cameras[0],
-      ResolutionPreset.medium,
-      enableAudio: false,
-    );
+  Future<void> _initializeCamera() async {
+    try {
+      final cameras = await availableCameras();
+      final firstCamera = cameras.first;
 
-    await _controller.initialize();
+      _controller = CameraController(
+        firstCamera,
+        ResolutionPreset.medium,
+      );
 
-    _controller.startImageStream((CameraImage image) {
-      if (_isProcessing || _popupShown) return;
-      _isProcessing = true;
+      await _controller!.initialize();
+      setState(() {
+        _isCameraInitialized = true;
+      });
+    } catch (e) {
+      print("Kamera açılamadı: $e");
+    }
+  }
 
-      List<double> liveEmbedding = FaceRecognitionSimulator.generateEmbedding();
+  Future<void> _takePicture() async {
+    if (!_controller!.value.isInitialized) return;
 
-      bool matched = false;
+    final image = await _controller!.takePicture();
 
-      for (var student in StudentData.students) {
-        if (student.embedding != null &&
-            FaceRecognitionSimulator.isMatch(student.embedding!, liveEmbedding)) {
-          
-          matched = true;
-          student.isPresent = true;
+    final directory = await getTemporaryDirectory();
+    final filePath =
+        '${directory.path}/${DateTime.now().millisecondsSinceEpoch}.jpg';
 
-          _popupShown = true;
-          showDialog(
-            context: context,
-            builder: (_) => AlertDialog(
-              title: const Text("Öğrenci Tanındı"),
-              content: Text("${student.name} yoklamaya işlendi."),
-              actions: [
-                TextButton(
-                  onPressed: () {
-                    Navigator.pop(context);
-                    Navigator.pop(context); 
-                  },
-                  child: const Text("Tamam"),
-                ),
-              ],
-            ),
-          );
+    await image.saveTo(filePath);
 
-          _isProcessing = false;
-          return;
-        }
-      }
+    File finalImage = File(filePath);
 
-      // Eşleşme yoksa: yeni öğrenci ekle
-      if (!matched && !_popupShown) {
-        _popupShown = true;
+    // --- YENİ EKLEDİĞİMİZ KISIM ---
+    final result = await FaceRecognitionSimulator.recognize(finalImage, students);
 
-        AddStudentPopup.show(context, liveEmbedding, (newStudent) {
-          StudentData.students.add(newStudent);
-        });
-
-        Future.delayed(const Duration(seconds: 2), () {
-          Navigator.pop(context);
-        });
-      }
-
-      _isProcessing = false;
-    });
-
-    setState(() {
-      _isInitialized = true;
-    });
+    if (result == null) {
+      // Tanınmayan yüz
+      Navigator.pop(context, false);
+    } else {
+      // Tanındı (şimdilik hiç olmayacak)
+      Navigator.pop(context, true);
+    }
   }
 
   @override
   void dispose() {
-    _controller.dispose();
+    _controller?.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    if (!_isInitialized) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      );
-    }
-
     return Scaffold(
-      appBar: AppBar(title: const Text("Canlı Yüz Tanıma")),
-      body: CameraPreview(_controller),
+      appBar: AppBar(
+        title: Text("${widget.student.name} için Kamera"),
+      ),
+      body: _isCameraInitialized
+          ? Column(
+              children: [
+                Expanded(
+                  child: CameraPreview(_controller!),
+                ),
+                ElevatedButton(
+                  onPressed: _takePicture,
+                  child: const Text("Fotoğraf Çek"),
+                ),
+              ],
+            )
+          : const Center(
+              child: Text("Kamera yükleniyor..."),
+            ),
     );
   }
 }
